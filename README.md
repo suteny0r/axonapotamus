@@ -1,6 +1,6 @@
 # AxonCadabra
 
-Android BLE tool to wirelessly triggering Axon Body Cams to start recording
+An Android App to wirelessly triggering any Axon Body or Dash Cams in range to start recording
 
 ## Features
 
