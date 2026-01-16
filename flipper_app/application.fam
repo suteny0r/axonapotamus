@@ -1,0 +1,11 @@
+App(
+    appid="axonapotamus",
+    name="Axonapotamus",
+    apptype=FlipperAppType.EXTERNAL,
+    entry_point="axonapotamus_app",
+    stack_size=2 * 1024,
+    fap_category="Bluetooth",
+    fap_author="suteny0r",
+    fap_version="0.1.0",
+    fap_description="Trigger Axon Body/Dash Cameras via BLE",
+)
