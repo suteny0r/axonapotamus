@@ -5,8 +5,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## Claude Directives
 
 **Apply these to every response:**
+- Stop acting like an idiot
 - Do not guess - if uncertain, investigate or ask
 - Verify your responses - check facts against source code and documentation before answering
+- Be consistent - use the same paths, tools, and patterns as previous successful operations
 
 ## Project Overview
 

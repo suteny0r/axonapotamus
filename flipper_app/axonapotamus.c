@@ -2,19 +2,12 @@
 #include <furi_hal.h>
 #include <furi_hal_version.h>
 #include <gui/gui.h>
+#include <gui/view.h>
 #include <gui/view_dispatcher.h>
-#include <gui/modules/submenu.h>
-#include <gui/modules/popup.h>
-#include <gui/modules/text_box.h>
 #include <notification/notification_messages.h>
 #include <extra_beacon.h>
 
 #define TAG "Axonapotamus"
-
-// Axon Signal Protocol Constants
-#define AXON_OUI_0 0x00
-#define AXON_OUI_1 0x25
-#define AXON_OUI_2 0xDF
 
 // Service UUID 0xFE6C (little-endian for BLE)
 #define AXON_SERVICE_UUID_LOW  0x6C
@@ -28,94 +21,43 @@ static const uint8_t BASE_PAYLOAD[] = {
 };
 
 #define PAYLOAD_SIZE 24
-#define FUZZ_INTERVAL_MS 500
+#define SEND_INTERVAL_MS 500
+#define BEACON_DURATION_MS 30
 
-// Scan info text (scrollable)
-// ~21 chars per line on Flipper screen
-static const char* SCAN_INFO_TEXT =
-    "SCAN NOT AVAILABLE\n"
-    "\n"
-    "BLE scanning is not\n"
-    "supported in Flipper\n"
-    "stock firmware. Only\n"
-    "advertising APIs are\n"
-    "exposed, not scanner.\n"
-    "\n"
-    "To find Axon devices:\n"
-    "\n"
-    "1. Use nRF Connect or\n"
-    "LightBlue app on your\n"
-    "phone to scan BLE.\n"
-    "\n"
-    "2. Look for MAC addr\n"
-    "starting with:\n"
-    "00:25:DF (Axon OUI)\n"
-    "\n"
-    "3. Axon cameras use\n"
-    "Service UUID: 0xFE6C\n";
-
-typedef enum {
-    AxonapotamusViewSubmenu,
-    AxonapotamusViewPopup,
-    AxonapotamusViewTextBox,
-} AxonapotamusView;
-
-typedef enum {
-    AxonapotamusSubmenuIndexTransmit,
-    AxonapotamusSubmenuIndexFuzz,
-    AxonapotamusSubmenuIndexScan,
-} AxonapotamusSubmenuIndex;
+typedef struct {
+    uint16_t fuzz_value;
+    uint8_t fuzz_bytes[4];
+    bool is_running;
+    bool fuzz_enabled;
+} AxonapotamusModel;
 
 typedef struct {
     Gui* gui;
     ViewDispatcher* view_dispatcher;
-    Submenu* submenu;
-    Popup* popup;
-    TextBox* text_box;
+    View* main_view;
     NotificationApp* notifications;
 
-    FuriTimer* fuzz_timer;
-    FuriTimer* single_blink_timer;
-    uint16_t fuzz_value;
-    uint8_t current_payload[PAYLOAD_SIZE];
+    FuriTimer* send_timer;
 
-    bool is_transmitting;
-    bool is_fuzzing;
-    bool is_on_popup;
+    uint8_t fuzz_payload[PAYLOAD_SIZE];
 } Axonapotamus;
 
-// Forward declarations
-static void axonapotamus_stop_transmit(Axonapotamus* app);
-static void axonapotamus_single_blink_callback(void* context);
-
-static void axonapotamus_update_payload_with_fuzz(Axonapotamus* app) {
-    memcpy(app->current_payload, BASE_PAYLOAD, PAYLOAD_SIZE);
-
-    // Fuzz bytes at positions 10-11 (command bytes)
-    app->current_payload[10] = (app->fuzz_value >> 8) & 0xFF;
-    app->current_payload[11] = app->fuzz_value & 0xFF;
-
-    // Fuzz bytes at positions 20-21
-    app->current_payload[20] = (app->fuzz_value >> 4) & 0xFF;
-    app->current_payload[21] = (app->fuzz_value << 4) & 0xFF;
-}
-
-static bool axonapotamus_start_advertising(Axonapotamus* app) {
-    // Use Flipper's real BLE MAC address
+static void axonapotamus_send_single_packet(const uint8_t* payload) {
     const uint8_t* mac = furi_hal_version_get_ble_mac();
 
     GapExtraBeaconConfig config = {
-        .min_adv_interval_ms = 50,
-        .max_adv_interval_ms = 150,
+        .min_adv_interval_ms = 20,
+        .max_adv_interval_ms = 20,
         .adv_channel_map = GapAdvChannelMapAll,
         .adv_power_level = GapAdvPowerLevel_6dBm,
         .address_type = GapAddressTypePublic,
         .address = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
     };
 
+    furi_hal_bt_extra_beacon_stop();
+
     if(!furi_hal_bt_extra_beacon_set_config(&config)) {
-        FURI_LOG_E(TAG, "Failed to set beacon config");
-        return false;
+        return;
     }
 
     uint8_t adv_data[31];
@@ -133,136 +75,178 @@ static bool axonapotamus_start_advertising(Axonapotamus* app) {
     adv_data[adv_len++] = AXON_SERVICE_UUID_LOW;
     adv_data[adv_len++] = AXON_SERVICE_UUID_HIGH;
 
-    memcpy(&adv_data[adv_len], app->current_payload, PAYLOAD_SIZE);
+    memcpy(&adv_data[adv_len], payload, PAYLOAD_SIZE);
     adv_len += PAYLOAD_SIZE;
 
     if(!furi_hal_bt_extra_beacon_set_data(adv_data, adv_len)) {
-        FURI_LOG_E(TAG, "Failed to set beacon data");
-        return false;
+        return;
     }
 
     if(!furi_hal_bt_extra_beacon_start()) {
-        FURI_LOG_E(TAG, "Failed to start beacon");
+        return;
+    }
+
+    // Brief broadcast window
+    furi_delay_ms(BEACON_DURATION_MS);
+    furi_hal_bt_extra_beacon_stop();
+}
+
+static void axonapotamus_send_timer_callback(void* context) {
+    Axonapotamus* app = context;
+
+    bool should_send = false;
+    bool send_fuzz = false;
+
+    with_view_model(
+        app->main_view,
+        AxonapotamusModel * model,
+        {
+            should_send = model->is_running;
+            send_fuzz = model->fuzz_enabled;
+
+            if(should_send && send_fuzz) {
+                model->fuzz_value++;
+
+                // Build fuzz payload
+                memcpy(app->fuzz_payload, BASE_PAYLOAD, PAYLOAD_SIZE);
+                app->fuzz_payload[10] = (model->fuzz_value >> 8) & 0xFF;
+                app->fuzz_payload[11] = model->fuzz_value & 0xFF;
+                app->fuzz_payload[20] = (model->fuzz_value >> 4) & 0xFF;
+                app->fuzz_payload[21] = (model->fuzz_value << 4) & 0xFF;
+
+                // Store for display
+                model->fuzz_bytes[0] = app->fuzz_payload[10];
+                model->fuzz_bytes[1] = app->fuzz_payload[11];
+                model->fuzz_bytes[2] = app->fuzz_payload[20];
+                model->fuzz_bytes[3] = app->fuzz_payload[21];
+            }
+        },
+        send_fuzz);  // Redraw if fuzz enabled
+
+    if(should_send) {
+        // Send primary payload
+        axonapotamus_send_single_packet(BASE_PAYLOAD);
+        notification_message(app->notifications, &sequence_blink_cyan_10);
+
+        // If fuzz enabled, also send fuzz payload
+        if(send_fuzz) {
+            axonapotamus_send_single_packet(app->fuzz_payload);
+            notification_message(app->notifications, &sequence_blink_magenta_10);
+        }
+    }
+}
+
+static void axonapotamus_draw_callback(Canvas* canvas, void* model_ptr) {
+    AxonapotamusModel* model = model_ptr;
+
+    canvas_clear(canvas);
+
+    // Title
+    canvas_set_font(canvas, FontPrimary);
+    canvas_draw_str_aligned(canvas, 64, 2, AlignCenter, AlignTop, "AXONAPOTAMUS");
+
+    // Divider line
+    canvas_draw_line(canvas, 0, 14, 128, 14);
+
+    // Status
+    canvas_set_font(canvas, FontSecondary);
+    if(model->is_running) {
+        canvas_draw_str(canvas, 4, 26, "Status: RUNNING");
+    } else {
+        canvas_draw_str(canvas, 4, 26, "Status: STOPPED");
+    }
+
+    // Fuzz option
+    canvas_draw_str(canvas, 4, 38, "Fuzz:");
+    if(model->fuzz_enabled) {
+        canvas_draw_box(canvas, 32, 30, 10, 10);
+        canvas_set_color(canvas, ColorWhite);
+        canvas_draw_str(canvas, 34, 38, "x");
+        canvas_set_color(canvas, ColorBlack);
+        canvas_draw_str(canvas, 46, 38, "ON");
+    } else {
+        canvas_draw_frame(canvas, 32, 30, 10, 10);
+        canvas_draw_str(canvas, 46, 38, "OFF");
+    }
+
+    // Fuzz bytes display (only when running and fuzz enabled)
+    if(model->is_running && model->fuzz_enabled) {
+        char fuzz_str[32];
+        snprintf(fuzz_str, sizeof(fuzz_str), "Fuzz: %02X %02X / %02X %02X",
+                 model->fuzz_bytes[0], model->fuzz_bytes[1],
+                 model->fuzz_bytes[2], model->fuzz_bytes[3]);
+        canvas_draw_str(canvas, 4, 50, fuzz_str);
+    }
+
+    // Instructions
+    canvas_set_font(canvas, FontSecondary);
+    if(model->is_running) {
+        canvas_draw_str_aligned(canvas, 64, 62, AlignCenter, AlignBottom, "[OK] Stop  [<>] Fuzz");
+    } else {
+        canvas_draw_str_aligned(canvas, 64, 62, AlignCenter, AlignBottom, "[OK] Start  [<>] Fuzz");
+    }
+}
+
+static bool axonapotamus_input_callback(InputEvent* event, void* context) {
+    Axonapotamus* app = context;
+
+    if(event->type != InputTypePress && event->type != InputTypeRepeat) {
         return false;
     }
 
-    FURI_LOG_I(TAG, "Advertising started");
+    if(event->key == InputKeyBack) {
+        with_view_model(
+            app->main_view,
+            AxonapotamusModel * model,
+            {
+                if(model->is_running) {
+                    model->is_running = false;
+                    furi_timer_stop(app->send_timer);
+                    furi_hal_bt_extra_beacon_stop();
+                    notification_message(app->notifications, &sequence_reset_rgb);
+                }
+            },
+            false);
+        view_dispatcher_stop(app->view_dispatcher);
+        return true;
+    }
+
+    with_view_model(
+        app->main_view,
+        AxonapotamusModel * model,
+        {
+            switch(event->key) {
+                case InputKeyOk:
+                    if(model->is_running) {
+                        // Stop
+                        model->is_running = false;
+                        furi_timer_stop(app->send_timer);
+                        furi_hal_bt_extra_beacon_stop();
+                        notification_message(app->notifications, &sequence_reset_rgb);
+                    } else {
+                        // Start
+                        model->is_running = true;
+                        model->fuzz_value = 0;
+                        notification_message(app->notifications, &sequence_blink_cyan_100);
+                        furi_timer_start(app->send_timer, furi_ms_to_ticks(SEND_INTERVAL_MS));
+                    }
+                    break;
+
+                case InputKeyLeft:
+                case InputKeyRight:
+                    model->fuzz_enabled = !model->fuzz_enabled;
+                    if(model->fuzz_enabled) {
+                        notification_message(app->notifications, &sequence_single_vibro);
+                    }
+                    break;
+
+                default:
+                    break;
+            }
+        },
+        true);
+
     return true;
-}
-
-static void axonapotamus_stop_advertising(void) {
-    furi_hal_bt_extra_beacon_stop();
-    FURI_LOG_I(TAG, "Advertising stopped");
-}
-
-static void axonapotamus_start_transmit(Axonapotamus* app, bool fuzz_mode) {
-    if(app->is_transmitting) return;
-
-    memcpy(app->current_payload, BASE_PAYLOAD, PAYLOAD_SIZE);
-    app->fuzz_value = 0;
-    app->is_fuzzing = fuzz_mode;
-
-    if(axonapotamus_start_advertising(app)) {
-        app->is_transmitting = true;
-
-        if(fuzz_mode) {
-            notification_message(app->notifications, &sequence_blink_magenta_100);
-            furi_timer_start(app->fuzz_timer, furi_ms_to_ticks(FUZZ_INTERVAL_MS));
-            popup_set_header(app->popup, "FUZZ TX ACTIVE", 64, 20, AlignCenter, AlignCenter);
-        } else {
-            notification_message(app->notifications, &sequence_blink_cyan_100);
-            furi_timer_start(app->single_blink_timer, furi_ms_to_ticks(FUZZ_INTERVAL_MS));
-            popup_set_header(app->popup, "TX ACTIVE", 64, 20, AlignCenter, AlignCenter);
-        }
-        popup_set_text(app->popup, "Broadcasting Axon Signal\nPress Back to stop", 64, 40, AlignCenter, AlignCenter);
-    } else {
-        popup_set_header(app->popup, "TX FAILED", 64, 20, AlignCenter, AlignCenter);
-        popup_set_text(app->popup, "Could not start BLE beacon", 64, 40, AlignCenter, AlignCenter);
-    }
-
-    app->is_on_popup = true;
-    view_dispatcher_switch_to_view(app->view_dispatcher, AxonapotamusViewPopup);
-}
-
-static void axonapotamus_stop_transmit(Axonapotamus* app) {
-    furi_timer_stop(app->fuzz_timer);
-    furi_timer_stop(app->single_blink_timer);
-
-    if(app->is_fuzzing) {
-        app->is_fuzzing = false;
-    }
-
-    if(app->is_transmitting) {
-        axonapotamus_stop_advertising();
-        app->is_transmitting = false;
-        notification_message(app->notifications, &sequence_reset_rgb);
-    }
-}
-
-static void axonapotamus_fuzz_timer_callback(void* context) {
-    Axonapotamus* app = context;
-
-    if(!app->is_transmitting || !app->is_fuzzing) return;
-
-    furi_hal_bt_extra_beacon_stop();
-
-    app->fuzz_value++;
-
-    axonapotamus_update_payload_with_fuzz(app);
-
-    axonapotamus_start_advertising(app);
-
-    notification_message(app->notifications, &sequence_blink_magenta_10);
-
-    FURI_LOG_D(TAG, "Fuzz value: 0x%04X", app->fuzz_value);
-}
-
-static void axonapotamus_single_blink_callback(void* context) {
-    Axonapotamus* app = context;
-
-    if(!app->is_transmitting || app->is_fuzzing) return;
-
-    notification_message(app->notifications, &sequence_blink_cyan_10);
-}
-
-static void axonapotamus_submenu_callback(void* context, uint32_t index) {
-    Axonapotamus* app = context;
-
-    switch(index) {
-        case AxonapotamusSubmenuIndexTransmit:
-            axonapotamus_start_transmit(app, false);
-            break;
-        case AxonapotamusSubmenuIndexFuzz:
-            axonapotamus_start_transmit(app, true);
-            break;
-        case AxonapotamusSubmenuIndexScan:
-            text_box_set_text(app->text_box, SCAN_INFO_TEXT);
-            text_box_set_focus(app->text_box, TextBoxFocusStart);
-            app->is_on_popup = true;
-            view_dispatcher_switch_to_view(app->view_dispatcher, AxonapotamusViewTextBox);
-            break;
-    }
-}
-
-static bool axonapotamus_navigation_callback(void* context) {
-    Axonapotamus* app = context;
-
-    // If we're on popup or text_box view, go back to submenu
-    if(app->is_on_popup) {
-        axonapotamus_stop_transmit(app);
-        app->is_on_popup = false;
-        view_dispatcher_switch_to_view(app->view_dispatcher, AxonapotamusViewSubmenu);
-        return true;  // We handled it
-    }
-
-    // On submenu, let default behavior happen (exit app)
-    return false;
-}
-
-static bool axonapotamus_custom_callback(void* context, uint32_t event) {
-    UNUSED(context);
-    UNUSED(event);
-    return false;
 }
 
 static Axonapotamus* axonapotamus_alloc(void) {
@@ -271,56 +255,46 @@ static Axonapotamus* axonapotamus_alloc(void) {
     app->gui = furi_record_open(RECORD_GUI);
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
 
-    // Initialize state
-    app->is_transmitting = false;
-    app->is_fuzzing = false;
-    app->is_on_popup = false;
-    app->fuzz_value = 0;
-    memcpy(app->current_payload, BASE_PAYLOAD, PAYLOAD_SIZE);
+    memcpy(app->fuzz_payload, BASE_PAYLOAD, PAYLOAD_SIZE);
 
-    // Create timers
-    app->fuzz_timer = furi_timer_alloc(axonapotamus_fuzz_timer_callback, FuriTimerTypePeriodic, app);
-    app->single_blink_timer = furi_timer_alloc(axonapotamus_single_blink_callback, FuriTimerTypePeriodic, app);
+    // Create timer
+    app->send_timer = furi_timer_alloc(axonapotamus_send_timer_callback, FuriTimerTypePeriodic, app);
 
     // View dispatcher
     app->view_dispatcher = view_dispatcher_alloc();
-    view_dispatcher_set_event_callback_context(app->view_dispatcher, app);
-    view_dispatcher_set_navigation_event_callback(app->view_dispatcher, axonapotamus_navigation_callback);
-    view_dispatcher_set_custom_event_callback(app->view_dispatcher, axonapotamus_custom_callback);
     view_dispatcher_attach_to_gui(app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
 
-    // Submenu
-    app->submenu = submenu_alloc();
-    submenu_add_item(app->submenu, "Send Start Loop", AxonapotamusSubmenuIndexTransmit, axonapotamus_submenu_callback, app);
-    submenu_add_item(app->submenu, "Send Fuzz Cooldown Loop", AxonapotamusSubmenuIndexFuzz, axonapotamus_submenu_callback, app);
-    submenu_add_item(app->submenu, "Scan for Axon Devices", AxonapotamusSubmenuIndexScan, axonapotamus_submenu_callback, app);
-    view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewSubmenu, submenu_get_view(app->submenu));
+    // Main view
+    app->main_view = view_alloc();
+    view_allocate_model(app->main_view, ViewModelTypeLocking, sizeof(AxonapotamusModel));
+    view_set_context(app->main_view, app);
+    view_set_draw_callback(app->main_view, axonapotamus_draw_callback);
+    view_set_input_callback(app->main_view, axonapotamus_input_callback);
 
-    // Popup (for TX status)
-    app->popup = popup_alloc();
-    view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewPopup, popup_get_view(app->popup));
+    // Initialize model
+    with_view_model(
+        app->main_view,
+        AxonapotamusModel * model,
+        {
+            model->is_running = false;
+            model->fuzz_enabled = false;
+            model->fuzz_value = 0;
+            memset(model->fuzz_bytes, 0, sizeof(model->fuzz_bytes));
+        },
+        true);
 
-    // TextBox (for scrollable scan info)
-    app->text_box = text_box_alloc();
-    text_box_set_font(app->text_box, TextBoxFontText);
-    view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewTextBox, text_box_get_view(app->text_box));
+    view_dispatcher_add_view(app->view_dispatcher, 0, app->main_view);
 
     return app;
 }
 
 static void axonapotamus_free(Axonapotamus* app) {
-    axonapotamus_stop_transmit(app);
+    furi_timer_stop(app->send_timer);
+    furi_hal_bt_extra_beacon_stop();
+    furi_timer_free(app->send_timer);
 
-    furi_timer_free(app->fuzz_timer);
-    furi_timer_free(app->single_blink_timer);
-
-    view_dispatcher_remove_view(app->view_dispatcher, AxonapotamusViewSubmenu);
-    view_dispatcher_remove_view(app->view_dispatcher, AxonapotamusViewPopup);
-    view_dispatcher_remove_view(app->view_dispatcher, AxonapotamusViewTextBox);
-
-    submenu_free(app->submenu);
-    popup_free(app->popup);
-    text_box_free(app->text_box);
+    view_dispatcher_remove_view(app->view_dispatcher, 0);
+    view_free(app->main_view);
     view_dispatcher_free(app->view_dispatcher);
 
     furi_record_close(RECORD_GUI);
@@ -334,14 +308,10 @@ int32_t axonapotamus_app(void* p) {
 
     Axonapotamus* app = axonapotamus_alloc();
 
-    FURI_LOG_I(TAG, "Axonapotamus started");
-
-    view_dispatcher_switch_to_view(app->view_dispatcher, AxonapotamusViewSubmenu);
+    view_dispatcher_switch_to_view(app->view_dispatcher, 0);
     view_dispatcher_run(app->view_dispatcher);
 
     axonapotamus_free(app);
-
-    FURI_LOG_I(TAG, "Axonapotamus stopped");
 
     return 0;
 }
