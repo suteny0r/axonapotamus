@@ -1,6 +1,6 @@
 #include <furi.h>
 #include <furi_hal.h>
-#include <furi_hal_version.h>
+#include <furi_hal_random.h>
 #include <gui/gui.h>
 #include <gui/view.h>
 #include <gui/view_dispatcher.h>
@@ -12,6 +12,11 @@
 // Service UUID 0xFE6C (little-endian for BLE)
 #define AXON_SERVICE_UUID_LOW  0x6C
 #define AXON_SERVICE_UUID_HIGH 0xFE
+
+// Axon OUI prefix (00:25:DF)
+#define AXON_OUI_0 0x00
+#define AXON_OUI_1 0x25
+#define AXON_OUI_2 0xDF
 
 // Base payload (24 bytes)
 static const uint8_t BASE_PAYLOAD[] = {
@@ -40,18 +45,31 @@ typedef struct {
     FuriTimer* send_timer;
 
     uint8_t fuzz_payload[PAYLOAD_SIZE];
+    uint8_t current_mac[6];
 } Axonapotamus;
 
-static void axonapotamus_send_single_packet(const uint8_t* payload) {
-    const uint8_t* mac = furi_hal_version_get_ble_mac();
+// Generate random MAC with Axon OUI prefix
+static void axonapotamus_randomize_mac(Axonapotamus* app) {
+    // Use Axon OUI (00:25:DF) for first 3 bytes
+    app->current_mac[0] = AXON_OUI_0;
+    app->current_mac[1] = AXON_OUI_1;
+    app->current_mac[2] = AXON_OUI_2;
 
+    // Random bytes for last 3 (device-specific portion)
+    furi_hal_random_fill_buf(&app->current_mac[3], 3);
+}
+
+static void axonapotamus_send_single_packet(Axonapotamus* app, const uint8_t* payload) {
     GapExtraBeaconConfig config = {
         .min_adv_interval_ms = 20,
         .max_adv_interval_ms = 20,
         .adv_channel_map = GapAdvChannelMapAll,
         .adv_power_level = GapAdvPowerLevel_6dBm,
         .address_type = GapAddressTypePublic,
-        .address = {mac[0], mac[1], mac[2], mac[3], mac[4], mac[5]},
+        .address = {
+            app->current_mac[0], app->current_mac[1], app->current_mac[2],
+            app->current_mac[3], app->current_mac[4], app->current_mac[5]
+        },
     };
 
     furi_hal_bt_extra_beacon_stop();
@@ -125,12 +143,12 @@ static void axonapotamus_send_timer_callback(void* context) {
 
     if(should_send) {
         // Send primary payload
-        axonapotamus_send_single_packet(BASE_PAYLOAD);
+        axonapotamus_send_single_packet(app, BASE_PAYLOAD);
         notification_message(app->notifications, &sequence_blink_cyan_10);
 
         // If fuzz enabled, also send fuzz payload
         if(send_fuzz) {
-            axonapotamus_send_single_packet(app->fuzz_payload);
+            axonapotamus_send_single_packet(app, app->fuzz_payload);
             notification_message(app->notifications, &sequence_blink_magenta_10);
         }
     }
@@ -224,7 +242,8 @@ static bool axonapotamus_input_callback(InputEvent* event, void* context) {
                         furi_hal_bt_extra_beacon_stop();
                         notification_message(app->notifications, &sequence_reset_rgb);
                     } else {
-                        // Start
+                        // Start - randomize MAC for this session
+                        axonapotamus_randomize_mac(app);
                         model->is_running = true;
                         model->fuzz_value = 0;
                         notification_message(app->notifications, &sequence_blink_cyan_100);
@@ -256,6 +275,9 @@ static Axonapotamus* axonapotamus_alloc(void) {
     app->notifications = furi_record_open(RECORD_NOTIFICATION);
 
     memcpy(app->fuzz_payload, BASE_PAYLOAD, PAYLOAD_SIZE);
+
+    // Initialize with random MAC
+    axonapotamus_randomize_mac(app);
 
     // Create timer
     app->send_timer = furi_timer_alloc(axonapotamus_send_timer_callback, FuriTimerTypePeriodic, app);
