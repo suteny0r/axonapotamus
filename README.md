@@ -6,9 +6,18 @@ Ported from [AxonCadabra](https://github.com/WithLoveFromMinneapolis/AxonCadabra
 
 ## Features
 
-- **Send Start Loop**: Broadcast BLE advertising data with known-working payload to trigger camera recording
-- **Send Fuzz Cooldown Loop**: Iterate through payload values at 500ms intervals to bypass trigger cooldown
-- **Scan for Axon Devices**: Information on detecting nearby Axon BLE devices (OUI 00:25:DF) - *BLE scanning not available in stock firmware*
+- **Single-screen UI**: OK to Start/Stop, Left/Right to toggle Fuzz mode
+- **Primary broadcast**: Sends known-working payload every 500ms to trigger camera recording
+- **Fuzz mode**: Iterate through payload values to bypass per-device trigger cooldown
+- **Randomized MAC**: Each session uses a new random MAC address with Axon OUI (00:25:DF) prefix
+
+## MAC Randomization
+
+Each time you start transmission, a new random MAC address is generated:
+- First 3 bytes: Axon OUI (`00:25:DF`) - appears as legitimate Axon device
+- Last 3 bytes: Random via hardware RNG
+
+This prevents tracking and may help bypass per-device filtering.
 
 ## Notes
 
