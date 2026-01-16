@@ -291,9 +291,9 @@ static Axonapotamus* axonapotamus_alloc(void) {
 
     // Submenu
     app->submenu = submenu_alloc();
-    submenu_add_item(app->submenu, "Transmit (Single)", AxonapotamusSubmenuIndexTransmit, axonapotamus_submenu_callback, app);
-    submenu_add_item(app->submenu, "Transmit (Fuzz)", AxonapotamusSubmenuIndexFuzz, axonapotamus_submenu_callback, app);
-    submenu_add_item(app->submenu, "Scan for Axon", AxonapotamusSubmenuIndexScan, axonapotamus_submenu_callback, app);
+    submenu_add_item(app->submenu, "Send Start Loop", AxonapotamusSubmenuIndexTransmit, axonapotamus_submenu_callback, app);
+    submenu_add_item(app->submenu, "Send Fuzz Cooldown Loop", AxonapotamusSubmenuIndexFuzz, axonapotamus_submenu_callback, app);
+    submenu_add_item(app->submenu, "Scan for Axon Devices", AxonapotamusSubmenuIndexScan, axonapotamus_submenu_callback, app);
     view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewSubmenu, submenu_get_view(app->submenu));
 
     // Popup (for TX status)

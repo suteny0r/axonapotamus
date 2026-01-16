@@ -8,4 +8,5 @@ App(
     fap_author="suteny0r",
     fap_version="0.1.0",
     fap_description="Trigger Axon Body/Dash Cameras via BLE",
+    fap_icon="icon.png",
 )
