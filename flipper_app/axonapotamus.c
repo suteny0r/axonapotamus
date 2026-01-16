@@ -4,8 +4,11 @@
 #include <gui/gui.h>
 #include <gui/view.h>
 #include <gui/view_dispatcher.h>
+#include <gui/modules/popup.h>
 #include <notification/notification_messages.h>
 #include <extra_beacon.h>
+
+#include "axonapotamus_icons.h"
 
 #define TAG "Axonapotamus"
 
@@ -36,9 +39,15 @@ typedef struct {
     bool fuzz_enabled;
 } AxonapotamusModel;
 
+typedef enum {
+    AxonapotamusViewStartup,
+    AxonapotamusViewMain,
+} AxonapotamusViewId;
+
 typedef struct {
     Gui* gui;
     ViewDispatcher* view_dispatcher;
+    Popup* startup_popup;
     View* main_view;
     NotificationApp* notifications;
 
@@ -268,6 +277,11 @@ static bool axonapotamus_input_callback(InputEvent* event, void* context) {
     return true;
 }
 
+static void axonapotamus_startup_popup_callback(void* context) {
+    Axonapotamus* app = context;
+    view_dispatcher_switch_to_view(app->view_dispatcher, AxonapotamusViewMain);
+}
+
 static Axonapotamus* axonapotamus_alloc(void) {
     Axonapotamus* app = malloc(sizeof(Axonapotamus));
 
@@ -285,6 +299,17 @@ static Axonapotamus* axonapotamus_alloc(void) {
     // View dispatcher
     app->view_dispatcher = view_dispatcher_alloc();
     view_dispatcher_attach_to_gui(app->view_dispatcher, app->gui, ViewDispatcherTypeFullscreen);
+
+    // Startup popup with dolphin
+    app->startup_popup = popup_alloc();
+    popup_set_icon(app->startup_popup, 48, 0, &I_DolphinDone_80x58);
+    popup_set_header(app->startup_popup, "This is best app.", 0, 2, AlignLeft, AlignTop);
+    popup_set_text(app->startup_popup, "Clearly superior.", 0, 52, AlignLeft, AlignTop);
+    popup_set_timeout(app->startup_popup, 2000);
+    popup_set_context(app->startup_popup, app);
+    popup_set_callback(app->startup_popup, axonapotamus_startup_popup_callback);
+    popup_enable_timeout(app->startup_popup);
+    view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewStartup, popup_get_view(app->startup_popup));
 
     // Main view
     app->main_view = view_alloc();
@@ -305,7 +330,7 @@ static Axonapotamus* axonapotamus_alloc(void) {
         },
         true);
 
-    view_dispatcher_add_view(app->view_dispatcher, 0, app->main_view);
+    view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewMain, app->main_view);
 
     return app;
 }
@@ -315,7 +340,10 @@ static void axonapotamus_free(Axonapotamus* app) {
     furi_hal_bt_extra_beacon_stop();
     furi_timer_free(app->send_timer);
 
-    view_dispatcher_remove_view(app->view_dispatcher, 0);
+    view_dispatcher_remove_view(app->view_dispatcher, AxonapotamusViewStartup);
+    popup_free(app->startup_popup);
+
+    view_dispatcher_remove_view(app->view_dispatcher, AxonapotamusViewMain);
     view_free(app->main_view);
     view_dispatcher_free(app->view_dispatcher);
 
@@ -330,7 +358,7 @@ int32_t axonapotamus_app(void* p) {
 
     Axonapotamus* app = axonapotamus_alloc();
 
-    view_dispatcher_switch_to_view(app->view_dispatcher, 0);
+    view_dispatcher_switch_to_view(app->view_dispatcher, AxonapotamusViewStartup);
     view_dispatcher_run(app->view_dispatcher);
 
     axonapotamus_free(app);
