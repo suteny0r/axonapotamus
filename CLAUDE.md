@@ -2,6 +2,12 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Claude Directives
+
+**Apply these to every response:**
+- Do not guess - if uncertain, investigate or ask
+- Verify your responses - check facts against source code and documentation before answering
+
 ## Project Overview
 
 Axonapotamus - A Flipper Zero BLE application that triggers Axon Body and Dash Cameras to start recording by broadcasting Axon Signal protocol payloads.
