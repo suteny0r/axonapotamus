@@ -5,6 +5,7 @@
 #include <gui/view_dispatcher.h>
 #include <gui/modules/submenu.h>
 #include <gui/modules/popup.h>
+#include <gui/modules/text_box.h>
 #include <notification/notification_messages.h>
 #include <extra_beacon.h>
 
@@ -29,9 +30,34 @@ static const uint8_t BASE_PAYLOAD[] = {
 #define PAYLOAD_SIZE 24
 #define FUZZ_INTERVAL_MS 500
 
+// Scan info text (scrollable)
+// ~21 chars per line on Flipper screen
+static const char* SCAN_INFO_TEXT =
+    "SCAN NOT AVAILABLE\n"
+    "\n"
+    "BLE scanning is not\n"
+    "supported in Flipper\n"
+    "stock firmware. Only\n"
+    "advertising APIs are\n"
+    "exposed, not scanner.\n"
+    "\n"
+    "To find Axon devices:\n"
+    "\n"
+    "1. Use nRF Connect or\n"
+    "LightBlue app on your\n"
+    "phone to scan BLE.\n"
+    "\n"
+    "2. Look for MAC addr\n"
+    "starting with:\n"
+    "00:25:DF (Axon OUI)\n"
+    "\n"
+    "3. Axon cameras use\n"
+    "Service UUID: 0xFE6C\n";
+
 typedef enum {
     AxonapotamusViewSubmenu,
     AxonapotamusViewPopup,
+    AxonapotamusViewTextBox,
 } AxonapotamusView;
 
 typedef enum {
@@ -45,6 +71,7 @@ typedef struct {
     ViewDispatcher* view_dispatcher;
     Submenu* submenu;
     Popup* popup;
+    TextBox* text_box;
     NotificationApp* notifications;
 
     FuriTimer* fuzz_timer;
@@ -209,10 +236,10 @@ static void axonapotamus_submenu_callback(void* context, uint32_t index) {
             axonapotamus_start_transmit(app, true);
             break;
         case AxonapotamusSubmenuIndexScan:
-            popup_set_header(app->popup, "SCAN", 64, 20, AlignCenter, AlignCenter);
-            popup_set_text(app->popup, "Scanning for Axon devices\n(OUI 00:25:DF)\n\nNot yet implemented", 64, 40, AlignCenter, AlignCenter);
+            text_box_set_text(app->text_box, SCAN_INFO_TEXT);
+            text_box_set_focus(app->text_box, TextBoxFocusStart);
             app->is_on_popup = true;
-            view_dispatcher_switch_to_view(app->view_dispatcher, AxonapotamusViewPopup);
+            view_dispatcher_switch_to_view(app->view_dispatcher, AxonapotamusViewTextBox);
             break;
     }
 }
@@ -220,7 +247,7 @@ static void axonapotamus_submenu_callback(void* context, uint32_t index) {
 static bool axonapotamus_navigation_callback(void* context) {
     Axonapotamus* app = context;
 
-    // If we're on popup view, go back to submenu
+    // If we're on popup or text_box view, go back to submenu
     if(app->is_on_popup) {
         axonapotamus_stop_transmit(app);
         app->is_on_popup = false;
@@ -269,9 +296,14 @@ static Axonapotamus* axonapotamus_alloc(void) {
     submenu_add_item(app->submenu, "Scan for Axon", AxonapotamusSubmenuIndexScan, axonapotamus_submenu_callback, app);
     view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewSubmenu, submenu_get_view(app->submenu));
 
-    // Popup
+    // Popup (for TX status)
     app->popup = popup_alloc();
     view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewPopup, popup_get_view(app->popup));
+
+    // TextBox (for scrollable scan info)
+    app->text_box = text_box_alloc();
+    text_box_set_font(app->text_box, TextBoxFontText);
+    view_dispatcher_add_view(app->view_dispatcher, AxonapotamusViewTextBox, text_box_get_view(app->text_box));
 
     return app;
 }
@@ -284,9 +316,11 @@ static void axonapotamus_free(Axonapotamus* app) {
 
     view_dispatcher_remove_view(app->view_dispatcher, AxonapotamusViewSubmenu);
     view_dispatcher_remove_view(app->view_dispatcher, AxonapotamusViewPopup);
+    view_dispatcher_remove_view(app->view_dispatcher, AxonapotamusViewTextBox);
 
     submenu_free(app->submenu);
     popup_free(app->popup);
+    text_box_free(app->text_box);
     view_dispatcher_free(app->view_dispatcher);
 
     furi_record_close(RECORD_GUI);

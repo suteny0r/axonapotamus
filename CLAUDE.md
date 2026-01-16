@@ -64,6 +64,11 @@ app/                     # Original Android implementation (reference only)
 ## Key Implementation Details
 
 - Uses Flipper's Extra Beacon API (`furi_hal_bt_extra_beacon_*`) for BLE advertising
+- Uses Flipper's real BLE MAC address via `furi_hal_version_get_ble_mac()`
 - UI: Submenu with Transmit/Fuzz/Scan options, Popup for active states
 - Fuzz timer uses `FuriTimer` with 500ms periodic callback
-- Scan mode placeholder exists but BLE scanning not yet implemented
+- LED indicators: Cyan blink for single TX, Purple blink for fuzz TX
+
+## Limitations
+
+**BLE Scanning**: Not available in stock Flipper firmware. The firmware exposes Extra Beacon API for advertising but no high-level scanning API. Scanning would require direct HCI commands (`hci_le_set_scan_parameters`, `hci_le_set_scan_enable`) and hooking into BLE event callbacks for advertising reports - significant work beyond external app scope. Use nRF Connect or similar app to scan for Axon devices (OUI `00:25:DF`).
