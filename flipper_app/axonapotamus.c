@@ -208,9 +208,9 @@ static void axonapotamus_draw_callback(Canvas* canvas, void* model_ptr) {
     // Instructions
     canvas_set_font(canvas, FontSecondary);
     if(model->is_running) {
-        canvas_draw_str_aligned(canvas, 64, 62, AlignCenter, AlignBottom, "[OK] Stop  [<>] Fuzz");
+        canvas_draw_str_aligned(canvas, 64, 62, AlignCenter, AlignBottom, "[OK] Stop  [< >] Fuzz");
     } else {
-        canvas_draw_str_aligned(canvas, 64, 62, AlignCenter, AlignBottom, "[OK] Start  [<>] Fuzz");
+        canvas_draw_str_aligned(canvas, 64, 62, AlignCenter, AlignBottom, "[OK] Start  [< >] Fuzz");
     }
 }
 
@@ -261,9 +261,12 @@ static bool axonapotamus_input_callback(InputEvent* event, void* context) {
                     break;
 
                 case InputKeyLeft:
+                    model->fuzz_enabled = false;
+                    break;
+
                 case InputKeyRight:
-                    model->fuzz_enabled = !model->fuzz_enabled;
-                    if(model->fuzz_enabled) {
+                    if(!model->fuzz_enabled) {
+                        model->fuzz_enabled = true;
                         notification_message(app->notifications, &sequence_single_vibro);
                     }
                     break;
